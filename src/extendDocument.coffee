@@ -12,12 +12,11 @@ processtools = require('./processtools')
 Join = require('join')
 
 module.exports = (globalOptions) ->
-
 	mongoose = globalOptions.mongoose
 	graphdb  = globalOptions.neo4j
 
 	# Check that we don't override existing functions
-	if globalOptions.overrideProtypeFunctions isnt true
+	if globalOptions.overrideProtoypeFunctions isnt true
 		for functionName in [ 'applyGraphRelationships', 'removeNode', 'shortestPathTo', 'removeRelationships', 'removeRelationshipsBetween', 'removeRelationshipsFrom', 'removeRelationshipsTo', 'outgoingRelationships', 'incomingRelationships', 'allRelationships', 'queryRelationships', 'queryGraph', 'createRelationshipBetween', 'createRelationshipFrom', 'createRelationshipTo', 'getNodeId', 'findOrCreateCorrespondingNode', 'findCorrespondingNode' ]
 			throw new Error("Will not override mongoose::Document.prototype.#{functionName}") unless typeof mongoose.Document::[functionName] is 'undefined'
 
@@ -41,67 +40,69 @@ module.exports = (globalOptions) ->
 		return cb(Error('No graphability enabled'), null) unless @schema.get('graphability')
 		# REMOVED: options can be a cypher query as string
 		# options = { query: options } if typeof options is 'string'
-		{typeOfRelationship,options, cb} = processtools.sortTypeOfRelationshipAndOptionsAndCallback(typeOfRelationship,options,cb)
+		{typeOfRelationship, options, cb} = processtools.sortTypeOfRelationshipAndOptionsAndCallback(typeOfRelationship, options, cb)
 		# build query from options
-		typeOfRelationship ?= '*'
-		typeOfRelationship = if /^[*:]{1}$/.test(typeOfRelationship) or not typeOfRelationship then '' else ':'+typeOfRelationship
-		options.direction ?= 'both'
-		options.action ?= 'RETURN'
-		options.processPart ?= 'r'
+		typeOfRelationship          ?= '*'
+		typeOfRelationship = if /^[*:]{1}$/.test(typeOfRelationship) or not typeOfRelationship then '' else ':' + typeOfRelationship
+		options.direction           ?= 'both'
+		options.action              ?= 'RETURN'
+		if options.count or options.countDistinct
+			options.count = 'distinct ' + options.countDistinct if options.countDistinct
+			options.returnStatement = 'count(' + options.count + ')'
+			options.processPart = 'count(' + options.count + ')'
+		options.processPart         ?= 'r'
+		options.returnStatement     ?= options.processPart
 		options.referenceDocumentID ?= @_id
-	options.order ?= ''
-	options.limit ?= ''
-	# endNode can be string or node object
-	options.endNodeId ?= ''
-	options.endNodeId = endNode.id if typeof endNode is 'object'
-	options.debug = {} if options.debug is true
-	doc = @
-	id = processtools.getObjectIDAsString(doc)
-	@getNode (nodeErr, fromNode) ->
-		# if no node is found
-		return cb(nodeErr, null, options) if nodeErr
+		options.limit ?= ''
+		options.order ?= ''
+		# endNode can be string or node object
+		options.endNodeId           ?= ''
+		options.endNodeId = endNode.id if typeof endNode is 'object'
+		options.debug = {} if options.debug is true
+		doc = @
+		id = processtools.getObjectIDAsString(doc)
+		@getNode (nodeErr, fromNode) ->
+			# if no node is found
+			return cb(nodeErr, null, options) if nodeErr
 
 
-
-		cypher = """
-		         START a = node(%(id)s)%(endNodeId)s
-		         MATCH (a)%(incoming)s[r%(relation)s]%(outgoing)s(b)
-		         %(whereRelationship)s
-		         %(action)s %(processPart)s
-		         %(order)s
-		         %(limit)s
-		         ;
-		         """
+			cypher = """
+			         START a = node(%(id)s)%(endNodeId)s
+			         MATCH (a)%(incoming)s[r%(relation)s]%(outgoing)s(b)
+			         %(whereRelationship)s
+			         %(action)s %(returnStatement)s
+			         %(limit)s %(order)s;
+			         """
 
 
+			cypher = _s.sprintf cypher,
+				id: fromNode.id
+				incoming: if options.direction is 'incoming' then '<-' else '-'
+				outgoing: if options.direction is 'outgoing' then '->' else '-'
+				relation: typeOfRelationship
+				action: options.action.toUpperCase()
+				returnStatement: options.returnStatement
+				limit: options.limit
+				order: options.order
+				whereRelationship: if options.where?.relationship then "WHERE #{options.where.relationship}" else ''
+				endNodeId: if options.endNodeId then ", b = node(#{options.endNodeId})" else ''
+			options.startNode     ?= fromNode.id
+			# for logging
 
-		cypher = _s.sprintf cypher,
-			id:                 fromNode.id
-			incoming:           if options.direction is 'incoming' then '<-' else '-'
-			outgoing:           if options.direction is 'outgoing' then '->' else '-'
-			relation:           typeOfRelationship
-			action:             options.action.toUpperCase()
-			processPart:        options.processPart
-			order:              options.order
-			limit:              options.limit
-			whereRelationship:  if options.where?.relationship then "WHERE #{options.where.relationship}" else ''
-			endNodeId:          if options.endNodeId then ", b = node(#{options.endNodeId})" else ''
-		options.startNode     ?= fromNode.id # for logging
 
-
-		# take query from options and discard build query
-		cypher = options.cypher if options.cypher
-		options.debug?.cypher ?= []
-		options.debug?.cypher?.push(cypher)
-		if options.dontExecute
-			cb(Error("`options.dontExecute` is set to true..."), null, options)
-		else
-			_queryGraphDB(cypher, options, cb)
+			# take query from options and discard build query
+			cypher = options.cypher if options.cypher
+			options.debug?.cypher ?= []
+			options.debug?.cypher?.push(cypher)
+			if options.dontExecute
+				cb(Error("`options.dontExecute` is set to true..."), null, options)
+			else
+				_queryGraphDB(cypher, options, cb)
 
 
 	#### Loads the equivalent node to this Document
 	Document::findCorrespondingNode = (options, cb) ->
-		{options, cb} = processtools.sortOptionsAndCallback(options,cb)
+		{options, cb} = processtools.sortOptionsAndCallback(options, cb)
 		return cb(Error('No graphability enabled'), null) unless @schema.get('graphability')
 		doc = @
 
@@ -149,10 +150,10 @@ module.exports = (globalOptions) ->
 				if errFound
 					cb(errFound, node, options)
 				else
-					_processNode(node,doc,cb)
+					_processNode(node, doc, cb)
 		else if options.doCreateIfNotExists or options.forceCreation is true
 			# create a new one
-			node = graphdb.createNode( _id: id, collection: collectionName )
+			node = graphdb.createNode(_id: id, _collection: collectionName)
 			node.save (errSave, node) ->
 				if errSave
 					cb(errSave, node, options)
@@ -166,7 +167,7 @@ module.exports = (globalOptions) ->
 
 	#### Finds or create equivalent Node to this Document
 	Document::findOrCreateCorrespondingNode = (options, cb) ->
-		{options, cb} = processtools.sortOptionsAndCallback(options,cb)
+		{options, cb} = processtools.sortOptionsAndCallback(options, cb)
 		@findCorrespondingNode(options, cb)
 
 	# Recommend to use this method instead of `findOrCreateCorrespondingNode`
@@ -185,7 +186,7 @@ module.exports = (globalOptions) ->
 
 	#### Creates a relationship from this Document to a given document
 	Document::createRelationshipTo = (doc, typeOfRelationship, attributes = {}, cb) ->
-		{attributes,cb} = processtools.sortAttributesAndCallback(attributes,cb)
+		{attributes, cb} = processtools.sortAttributesAndCallback(attributes, cb)
 		return cb(Error('No graphability enabled'), null) unless @schema.get('graphability')
 		# assign cb + attribute arguments
 		if typeof attributes is 'function'
@@ -198,10 +199,10 @@ module.exports = (globalOptions) ->
 		# -->  would increase requests to neo4j
 		if globalOptions.relationships.storeIDsInRelationship
 			attributes._to   ?= doc.constructor.collection.name + ":" + (String) doc._id
-			attributes._from ?= @constructor.collection.name    + ":" + (String) @._id
+			attributes._from ?= @constructor.collection.name + ":" + (String) @._id
 
 		if globalOptions.relationships.storeTimestamp
-			attributes._created_at ?= Math.floor(Date.now()/1000)
+			attributes._created_at ?= Math.floor(Date.now() /1000)
 
 			# Get both nodes: "from" node (this document) and "to" node (given as 1st argument)
 			@findOrCreateCorrespondingNode (fromErr, from) ->
@@ -313,9 +314,9 @@ module.exports = (globalOptions) ->
 			from.getNode (errFrom, fromNode) -> to.getNode (errTo, toNode) ->
 			return cb(new Error("Problem(s) getting from and/or to node")) if errFrom or errTo or not fromNode or not toNode
 			levelDeepness = 15
-			query = """
+			query =  """
 			         START a = node(#{fromNode.id}), b = node(#{toNode.id})
-			         MATCH path = shortestPath( a-[#{if typeOfRelationship then ':'+typeOfRelationship else ''}*..#{levelDeepness}]->b )
+			         MATCH path = shortestPath( a-[#{if typeOfRelationship then ':' + typeOfRelationship else ''}*..#{levelDeepness}]->b )
 			         RETURN path;
 			         """
 			options.processPart = 'path'
@@ -403,14 +404,15 @@ module.exports = (globalOptions) ->
 			# TODO: type check
 			# try to "guess" process part from last statement
 			# TODO: nice or bad feature?! ... maybe too much magic
-			if not options.processPart? and cypher.trim().match(/(RETURN|DELETE)\s+([a-zA-Z]+?)[;]*$/)?[2]
+			if not options.processPart? and cypher.trim().match(/(RETURN|DELETE)\s+([a-zA-Z]+?)[;]*$/) ? [2]
 			options.processPart = cypher.trim().match(/(RETURN|DELETE)\s+([a-zA-Z]+?)[;]*$/)[2]
 		graphdb.query cypher, null, (errGraph, map) ->
 			# Adding cypher query for better debugging
 			options.debug = {} if options.debug is true
 			options.debug?.cypher ?= []
 			options.debug?.cypher?.push(cypher)
-			options.loadDocuments ?= true # load documents from mongodb
+			options.loadDocuments ?= true
+			# load documents from mongodb
 			# TODO: would it be helpful to have also the `native` result?
 			# options.graphResult = map
 			if options.loadDocuments and map?.length > 0
@@ -434,4 +436,3 @@ module.exports = (globalOptions) ->
 	if globalOptions.cacheAttachedNodes
 		Document::_cached_node = null
   
-
